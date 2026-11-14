@@ -1,0 +1,25 @@
+{
+  "name": "zcode-swarm-market",
+  "version": 1,
+  "owner": {
+    "name": "rimesekai"
+  },
+  "description": "Antigravity-style multi-agent swarm orchestration for ZCode.",
+  "plugins": [
+    {
+      "name": "zcode-swarm",
+      "version": "0.1.0",
+      "description": "Multi-agent swarm orchestration for ZCode: lead decomposes, workers execute in isolated git worktrees, adversarial verification, dynamic follow-up queue, mailboxes, and regression gate.",
+      "source": ".",
+      "icon": "https://raw.githubusercontent.com/rimesekai/Zcode-swarm/main/assets/icon-512.png",
+      "displayName": "ZCode Swarm",
+      "displayName_i18n": {
+        "zh-CN": "蜂群模式"
+      },
+      "description_i18n": {
+        "zh-CN": "一条目标拉起多智能体小队：领队拆解、工人隔离并行施工、对抗验证员把关、后续任务回流队列、信箱通信、合并后集成回归、终审报告"
+      },
+      "category": "developer-tools"
+    }
+  ]
+}

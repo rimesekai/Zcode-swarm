@@ -71,9 +71,12 @@ flowchart TD
 
 ### 安装
 
-- **方式 A · 作为 ZCode 插件加载**
-  仓库根目录已包含 [`.zcode-plugin/plugin.json`](.zcode-plugin/plugin.json) 与技能目录，可在 ZCode 中作为本地插件加载启用 `zcode-swarm`。
-- **方式 B · 手动安装（推荐通用方式）**
+- **方式 A · 插件市场一键安装（推荐）**
+  仓库根目录内置 [`marketplace.json`](marketplace.json)，可直接把本仓库作为 ZCode 插件市场添加：
+  1. 在 ZCode 中打开 `Plugin Marketplace` -> `Add` -> `Add Plugin Marketplace`
+  2. 输入仓库地址 `rimesekai/Zcode-swarm`
+  3. 在市场列表中找到 `ZCode Swarm（蜂群模式）` 点击 `Install` 即可
+- **方式 B · 手动安装**
   将技能目录与编排脚本放到 ZCode 用户目录：
   ```bash
   mkdir -p ~/.zcode/skills ~/.zcode/workflows
@@ -168,13 +171,17 @@ flowchart TD
 
 ### Install & Usage
 
+**Option A · Plugin Marketplace (Recommended)**: add `rimesekai/Zcode-swarm` in ZCode via `Plugin Marketplace` -> `Add` -> `Add Plugin Marketplace`, then install `ZCode Swarm`.
+
+**Option B · Manual Install**:
+
 ```bash
 mkdir -p ~/.zcode/skills ~/.zcode/workflows
 cp -r skills/swarm ~/.zcode/skills/swarm
 cp skills/swarm/workflow/swarm.dwf.ts ~/.zcode/workflows/swarm.dwf.ts
 ```
 
-Or load the repository directly as a ZCode plugin (via [`.zcode-plugin/plugin.json`](.zcode-plugin/plugin.json)). On every run, [`SKILL.md`](skills/swarm/SKILL.md) verifies `ListSavedWorkflows` and installs/repairs the global workflow script automatically.
+On every run, [`SKILL.md`](skills/swarm/SKILL.md) verifies `ListSavedWorkflows` and installs/repairs the global workflow script automatically.
 
 ```text
 /swarm <goal> [--agents N] [--isolation auto|worktree|shared] [--interactive] [--model <providerId/modelId>]
