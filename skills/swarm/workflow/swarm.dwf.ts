@@ -272,9 +272,13 @@ artifact.board("board", {
   title: "Swarm 任务看板",
   key: "id",
   status: "status",
-  columns: ["待执行", "执行中", "验证中", "修复中", "已完成", "受阻", "未过验证"],
+  columns: ["待执行", "执行中", "验证中", "修复中", "已完成", "已合并", "受阻", "未过验证"],
   cardTitle: "title",
   detail: [
+    { field: "origin", label: "来源" },
+    { field: "worker", label: "工人" },
+    { field: "worktree", label: "工作树" },
+    { field: "merged", label: "合并" },
     { field: "rounds", label: "验证轮次" },
     { field: "files", label: "变更文件" },
     { field: "summary", label: "摘要" },
@@ -288,6 +292,16 @@ artifact.table("messages", {
     { field: "from", label: "来自" },
     { field: "to", label: "投递给" },
     { field: "text", label: "内容" },
+  ],
+});
+
+artifact.table("gates", {
+  title: "集成回归",
+  key: "cmd",
+  columns: [
+    { field: "cmd", label: "命令" },
+    { field: "exitCode", label: "退出码" },
+    { field: "note", label: "结果" },
   ],
 });
 
@@ -524,24 +538,47 @@ function metricsTick(): void {
 function finalize(outcome: TaskOutcome): void {
   outcomes.set(outcome.id, outcome);
   phaseOf.delete(outcome.id);
-  report(
-    { id: outcome.id, title: outcome.title, status: outcome.status, rounds: outcome.rounds, files: outcome.changedFiles.join("、"), summary: outcome.summary },
-    "board",
-  );
+  card(outcome.id, outcome.status, outcome.rounds, outcome.changedFiles.join("、"), outcome.summary);
   report(outcome);
   metricsTick();
 }
 
+/** 卡片元数据：来源 / 工人 / 工作树 / 合并状态（看板 detail 字段的数据源）。 */
+const cardMeta = new Map<string, { origin: string; worker: string; worktree: string; merged: string }>();
+
+/** 统一喂一张看板卡（补齐全部 detail 字段，避免卡片显示空白）。 */
+function card(id: string, status: string, rounds: number, files: string, summary: string): void {
+  const m = cardMeta.get(id);
+  report(
+    {
+      id: id,
+      title: pendingTitles[id] ?? id,
+      status: status,
+      origin: m?.origin ?? "—",
+      worker: m?.worker ?? "—",
+      worktree: m?.worktree ?? "—",
+      merged: m?.merged ?? "—",
+      rounds: rounds,
+      files: files,
+      summary: summary,
+    },
+    "board",
+  );
+}
+
 /** 占位：登记任务元数据与总量计数。检查与占位之间绝不能隔 await，否则并发分流会突破 maxTotal。 */
-function reserveSlot(task: Task, depth: number): void {
+function reserveSlot(task: Task, depth: number, origin: string): void {
   allTaskIds.push(task.id);
   enqueuedIds.add(task.id);
   pendingTitles[task.id] = task.title;
+  cardMeta.set(task.id, {
+    origin: origin,
+    worker: `工人·${task.id}`,
+    worktree: wtPaths[task.id] ?? "共享工作区",
+    merged: useWorktree ? "—" : "共享交付",
+  });
   enqueuedTotal += 1;
-  report(
-    { id: task.id, title: task.title, status: "待执行", rounds: 0, files: "", summary: depth > 0 ? "后续任务（工人上报，经领队分流）" : "" },
-    "board",
-  );
+  card(task.id, "待执行", 0, "", depth > 0 ? "后续任务（工人上报，经领队分流）" : "");
 }
 
 /** 入队：占位之后（可能隔了 worktree 准备等 await）真正把任务放进队列。 */
@@ -550,8 +587,8 @@ function dispatch(task: Task, depth: number): void {
   queue.send({ task: task, depth: depth });
 }
 
-function enqueue(task: Task, depth: number): void {
-  reserveSlot(task, depth);
+function enqueue(task: Task, depth: number, origin: string): void {
+  reserveSlot(task, depth, origin);
   dispatch(task, depth);
 }
 
@@ -587,7 +624,7 @@ async function harvestFor(selfId: string, delivered: Record<string, number>, col
 
 // 种子任务入队
 for (const t of tasks) {
-  enqueue(t, 0);
+  enqueue(t, 0, "初始");
 }
 log(`Swarm 开工：${tasks.length} 个初始任务入队，${workerCount} 个并行工人，隔离 = ${useWorktree ? "git worktree" : "共享工作区+范围分区"}。`);
 
@@ -617,7 +654,7 @@ const consumerStage = future(async () => {
     const t = item.task;
     const wt = wtPaths[t.id];
     try {
-      report({ id: t.id, title: t.title, status: "执行中", rounds: 0, files: "", summary: "" }, "board");
+      card(t.id, "执行中", 0, "", "");
       phaseOf.set(t.id, "执行中");
       metricsTick();
 
@@ -668,7 +705,7 @@ const consumerStage = future(async () => {
       while (rounds < VERIFY_ROUNDS) {
         rounds += 1;
         phaseOf.set(t.id, "验证中");
-        report({ id: t.id, title: t.title, status: "验证中", rounds: rounds, files: work.changedFiles.join("、"), summary: work.summary }, "board");
+        card(t.id, "验证中", rounds, work.changedFiles.join("、"), work.summary);
         metricsTick();
         const verdict = await verifier.ask<Verdict>(
           `对抗性验证任务「${t.title}」（第 ${rounds} 轮）。总目标背景：${goal}\n\n` +
@@ -687,7 +724,7 @@ const consumerStage = future(async () => {
         }
         if (rounds >= VERIFY_ROUNDS) break;
         phaseOf.set(t.id, "修复中");
-        report({ id: t.id, title: t.title, status: "修复中", rounds: rounds, files: work.changedFiles.join("、"), summary: work.summary }, "board");
+        card(t.id, "修复中", rounds, work.changedFiles.join("、"), work.summary);
         metricsTick();
         const mail = await harvestFor(t.id, delivered, false);
         work = await worker.ask<WorkResult>(
@@ -745,14 +782,23 @@ const consumerStage = future(async () => {
             acceptance: Array.isArray(fu.acceptance) && fu.acceptance.length > 0 ? fu.acceptance.map(String) : ["按说明完成后可核对"],
           };
           // 先原子占位（检查与占位之间无 await），再去做带 await 的 worktree 准备，否则并发分流会突破 maxTotal
-          reserveSlot(ft, item.depth + 1);
+          reserveSlot(ft, item.depth + 1, `来自 ${t.id} 上报`);
           if (useWorktree && ft.kind === "code") {
             try {
               const fwt = await setupWorktree(fid);
-              if (fwt !== undefined) wtPaths[fid] = fwt;
-              else worktreeFallbacks.push(fid);
+              const fm = cardMeta.get(fid);
+              if (fwt !== undefined) {
+                wtPaths[fid] = fwt;
+                if (fm !== undefined) fm.worktree = fwt;
+                card(fid, "待执行", 0, "", "后续任务（工人上报，经领队分流）");
+              } else {
+                worktreeFallbacks.push(fid);
+                if (fm !== undefined) fm.merged = "共享交付";
+              }
             } catch (err) {
               worktreeFallbacks.push(fid);
+              const fm = cardMeta.get(fid);
+              if (fm !== undefined) fm.merged = "共享交付";
               log(`后续任务 ${fid} 的 worktree 准备异常，回退共享模式：${String(err).slice(0, 200)}`);
             }
           }
@@ -841,6 +887,16 @@ if (useWorktree && mergeable.length > 0) {
       `最后用 git status --porcelain 确认主工作区（忽略 .swarm/ 与共享任务的预期改动）没有意外改动。如实汇报 MergeResult。`,
   );
   log(`合并：成功 ${merge.merged.length} 个，跳过 ${merge.skipped.length} 个。${merge.cleanup}`);
+  // 合并完成：把已合并任务的卡片推进「已合并」列
+  for (const id of allTaskIds) {
+    const o = outcomes.get(id);
+    if (o === undefined || o.status !== "已完成") continue;
+    const m = cardMeta.get(id);
+    if (m === undefined) continue;
+    const isMerged = merge.merged.includes(id);
+    m.merged = isMerged ? "已合并" : "未合并（跳过）";
+    card(id, isMerged ? "已合并" : "已完成", o.rounds, o.changedFiles.join("、"), o.summary);
+  }
 }
 
 let regression: Regression | null = null;
@@ -856,6 +912,7 @@ if (gateCommands.length > 0) {
     `逐条执行以下命令（在主工作区根目录跑），如实回报：\n${gateCommands.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n` +
       `每条记录：命令、退出码、一句话结果（附关键输出片段）。全部退出码为 0 则 pass=true。绝不修改任何文件。`,
   );
+  for (const c of regression.commands) report({ cmd: c.cmd, exitCode: c.exitCode, note: c.note }, "gates");
   if (!regression.pass) {
     log(`集成回归未通过（${regression.issues.length} 个要点），打回修复一轮。`);
     const fixer = agent("集成修复员", {
@@ -870,6 +927,7 @@ if (gateCommands.length > 0) {
     regression = await regressor.ask<Regression>(
       `修复后请逐条重跑全部命令并如实回报（格式同上）：\n${gateCommands.map((c, i) => `${i + 1}. ${c}`).join("\n")}`,
     );
+    for (const c of regression.commands) report({ cmd: c.cmd, exitCode: c.exitCode, note: c.note }, "gates");
     log(`修复后回归：${regression.pass ? "通过" : "仍未通过"}。`);
   }
 }

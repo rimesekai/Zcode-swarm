@@ -1,6 +1,6 @@
 {
   "name": "zcode-swarm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Antigravity 式蜂群模式：一条目标拉起多智能体小队——领队拆解、工人隔离并行、对抗验证、动态任务回流、信箱通信、集成回归、终审报告",
   "author": {
     "name": "rimesekai"
