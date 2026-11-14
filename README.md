@@ -1,114 +1,195 @@
-<p align="center"><img src="assets/icon-512.png" width="128" alt="zcode-swarm 图标"/></p>
+<div align="center">
 
-# zcode-swarm · 蜂群模式
+<img src="assets/icon-512.png" width="128" alt="zcode-swarm icon" />
 
-> 一条目标，拉起一支多智能体小队。移植自 Google Antigravity 的 `/swarm`，为 [ZCode](https://github.com/zai-org/ZCode) 的 dynamic-workflows 运行时从零重实现。
->
-> One goal, one swarm of agents. A from-scratch reimplementation of Google Antigravity's `/swarm` for ZCode's dynamic-workflows runtime.
+# zcode-swarm
 
-说「/swarm 把登录模块重构掉」，就会拉起一支小队：领队拆解任务 → 独立评审把关 → 多个工人在 git worktree 里并行施工 → 对抗性验证员逐个实测把关 → 工人发现的后续工作自动回流队列 → 合并分支 → 跑全量回归 → 领队终审。全程有任务看板、进度指标和工人消息板，跑完交一份执行报告。
+**一条目标，拉起一支有分工、有对抗验收、有动态回流的多智能体小队。**
+
+移植自 Google Antigravity 的 `/swarm` 协作范式，基于 [ZCode](https://github.com/zai-org/ZCode) 原生 `dynamic-workflows` 运行时从零构建。
+
+[简体中文](#为什么做-zcode-swarm) · [English](#english) · [示例报告](examples/) · [Changelog](CHANGELOG.md)
+
+</div>
 
 ---
 
-## 特性
+## 为什么做 `zcode-swarm`
 
-- **确定性编排**：不是靠一个 prompt 祈祷，而是 dynamic-workflows 脚本编排的类型化多智能体流水线——每一步的输入输出都有 schema。
-- **对抗性验证**：每个任务配一个专职验证员，逐条实测验收标准（能跑的命令真的跑、文件真的打开读），不过就打回，至多 3 轮；没过验证的改动不合并。
-- **动态生命周期**：工人施工中发现"还缺一件事"时写进 `followUps` 上报，领队分流后回流任务队列继续执行（嵌套 ≤2 层，总量 ≤2× 初始任务数）。
-- **信箱通信**：工人之间不共享上下文，但各有信箱（`.swarm/board/<任务id>.md`），`[@对方id]` 定向捎话、`[@all]` 广播，脚本在对话边界收割投递，消息实时投到消息板卡片。
-- **隔离与合并**：git 仓库自动用 worktree（每任务独立工作树+分支，验证通过后 `--no-ff` 合并）；非 git 仓库回退共享工作区+scope 分区。残留现场自动清理。
-- **集成回归门禁**：合并后在主工作区跑领队从仓库探得的全量构建/测试命令，失败打回修复一轮，仍失败计 high 级 finding。
-- **可选人工停点**：`--interactive` 时在「拆解确认后」和「收尾合并前」各停一次，等你给意见；不开则全程自动，工人/验证员仍可 escalate 提问。
-- **运行期可视化**：任务看板（7 列状态流）、精确进度指标、消息板流水、计划卡片、执行报告，全部是运行中的实时卡片。
+很多“多 Agent 协作”本质上是给主模型塞一段长 Prompt，让它临场决定要不要找人帮忙——拆解全靠发挥、范围容易踩踏、干没干完也只是自己说自己对。
 
-## 安装 Install
+`zcode-swarm` 把整套协作写成了一份**类型化的 TypeScript 编排脚本**（[`swarm.dwf.ts`](skills/swarm/workflow/swarm.dwf.ts)）：
 
-**方式 A · 插件安装**：仓库内置 `.zcode-plugin/plugin.json`，可在本地添加为 ZCode 插件后直接启用 `zcode-swarm`。
+1. **先评审再开工**：领队拆出任务后，必须先过「方案评审员」这一关，确认每个子任务自包含、范围不重叠、验收标准可实测，才放工人进场。
+2. **一任务一对抗验证员**：每个工人写完代码，立刻交给独立只读的「对抗性验证员」按验收标准逐条跑命令、打开文件核对；不通过直接打回原工作区修复（至多 3 轮），**未过验证的分支绝不合进主干**。
+3. **运行中可动态长出新任务**：工人在施工中发现缺失公共文件、上游前置依赖或相邻缺口时，通过 `followUps` 上报；领队分流审核后直接回流同一条并发队列，继续走隔离、验证、合并与回归。
+4. **全程可观测、可中途接管**：运行期实时产出任务看板、阶段进度指标、工人消息板、实施计划与最终执行报告；加上 `--interactive` 还能在拆解确认后、收尾合并前两次停下来等你拍板。
 
-**方式 B · 手动安装**（两个文件）：
+---
 
-```bash
-# 1. 编排脚本 → 全局 workflows 目录
-mkdir -p ~/.zcode/workflows
-cp skills/swarm/workflow/swarm.dwf.ts ~/.zcode/workflows/swarm.dwf.ts
+## 工作流总览
 
-# 2. 技能 → 用户技能目录
-mkdir -p ~/.zcode/skills
-cp -r skills/swarm ~/.zcode/skills/swarm
+```mermaid
+flowchart TD
+    U(["/swarm 目标 & 参数"]) --> Lead["领队 Lead：探测仓库并拆解方案"]
+    Lead --> Critic["方案评审员：核查独立性、scope 与 gateCommands"]
+    Critic -->|不过（至多 2 轮）| Lead
+    Critic -->|通过| Hole1{"--interactive?"}
+    Hole1 -->|是| Wait1["停点 1：人工调整任务列表"] --> Prep
+    Wait1 -.->|可选| Prep
+    Hole1 -->|否| Prep["准备隔离环境（git worktree / shared 分区）"]
+    Prep --> Q["并发任务队列 channel（counted close）"]
+    Q --> Worker["工人 Worker：施工并写入 .swarm/board/<id>.md"]
+    Worker -->|blocked| Finalize["记为受阻并更新看板/指标"]
+    Worker -->|完成自测| Verifier["对抗性验证员：只读实测验收标准"]
+    Verifier -->|不通过（rounds < 3）| Worker
+    Verifier -->|通过且上报 followUps| Triage["领队分流 followUps"]
+    Triage -->|批准（depth ≤ 2, total ≤ 2N）| Q
+    Verifier -->|通过 / 达上限| Outcome["汇总任务结局"]
+    Outcome --> Hole2{"--interactive?"}
+    Hole2 -->|是| Wait2["停点 2：人工确认待合并清单"] --> Merge
+    Hole2 -->|否| Merge["合并员：--no-ff 合并已通过分支并清理 worktree"]
+    Merge --> Reg["集成回归员：主工作区执行 gateCommands"]
+    Reg -->|失败| Fixer["集成修复员修复一轮并重跑"] --> Audit
+    Reg -->|通过 / 无门禁| Audit["领队终审：汇总 findings、notCovered 与执行报告"]
 ```
 
-装好后技能会在每次开跑前自检 `ListSavedWorkflows`，缺了或版本不对会自动从技能目录补装/覆盖（旧版会先备份）。
+---
 
-## 使用 Usage
+## 核心机制
 
+| 机制 | 实现方式 | 设计意图 |
+|---|---|---|
+| **隔离与安全清理** | Git 仓库默认 `git worktree`（每任务 `.swarm/<id>` + `swarm/<id>` 分支）；非 Git 仓库或 `--isolation shared` 自动降级共享工作区 + `scope` 分区 | 代码互不踩踏；建树前按 `worktree remove -> rmSync -> prune -> branch -D` 顺序清残留，失败则响亮回退共享并记入报告 |
+| **动态生命周期** | `channel<WorkItem>` + 计数关闭（`reserveSlot` 同步占位 + `dispatch` 入队），嵌套深度上限 `MAX_DEPTH = 2`，总任务数封顶 `2× 初始任务数` | 既支持施工中发现真实缺口后追加子任务，又防止并发分流突破上限或队列提前关闭 |
+| **无锁文件信箱** | 每名工人只写 `.swarm/board/<id>.md`，条目以 `## ` 开头；支持 `[@对方id]` 定向捎话与 `[@all]` 广播 | 避开并发写同一文件的锁竞争；脚本在 `ask` 边界统一收割投递，并实时推流至「消息板」卡片；每次运行开工前自动清空重建 |
+| **对抗验证与回归门禁** | 每任务独立只读验证员（封顶 3 轮）+ 合并后由「集成回归员」在主工作区重跑仓库 `gateCommands` | 把“单任务跑通”与“多分支合并后整体能跑”拆开把关，过滤 `.swarm/` 与预期产物后仅报告非预期脏改动 |
+
+---
+
+## 安装与使用
+
+### 安装
+
+- **方式 A · 作为 ZCode 插件加载**
+  仓库根目录已包含 [`.zcode-plugin/plugin.json`](.zcode-plugin/plugin.json) 与技能目录，可在 ZCode 中作为本地插件加载启用 `zcode-swarm`。
+- **方式 B · 手动安装（推荐通用方式）**
+  将技能目录与编排脚本放到 ZCode 用户目录：
+  ```bash
+  mkdir -p ~/.zcode/skills ~/.zcode/workflows
+  cp -r skills/swarm ~/.zcode/skills/swarm
+  cp skills/swarm/workflow/swarm.dwf.ts ~/.zcode/workflows/swarm.dwf.ts
+  ```
+  - 说明：[`SKILL.md`](skills/swarm/SKILL.md) 在每次执行前都会通过 `ListSavedWorkflows` 自检全局 `swarm` 工作流及参数签名；若缺失或版本过旧，会自动从技能目录 `workflow/swarm.dwf.ts` 补装或备份后更新。
+
+> 如果你此前曾手动安装过旧版 `~/.zcode/skills/swarm`，建议在启用插件版前先移除该个人目录，避免同名技能相互遮蔽。
+
+### 调用语法
+
+```text
+/swarm <目标> [--agents N] [--isolation auto|worktree|shared] [--interactive] [--model <providerId/modelId>]
 ```
-/swarm <目标> [--agents N] [--isolation auto|worktree|shared] [--interactive] [--model <模型id>]
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `<目标>` | 必填 | 一句话说清要做什么、边界与验收标准是什么 |
+| `--agents` | `4` | 并行工人数（范围 `1`–`10`；任务天然只需 1–2 块时建议调小，节省 Token） |
+| `--isolation` | `auto` | `auto`（Git 仓库自动启用 `worktree`，非 Git 自动回退 `shared`）/ `worktree` / `shared` |
+| `--interactive` | `false` | 开启后在「拆解方案确认后」与「收尾合并前」分别暂停，支持中途微调任务或跳过某分支合并 |
+| `--model` | 继承当前 | 整支小队统一切换到指定模型（完整 `providerId/modelId`） |
+
+**使用示例**
+
+```text
+/swarm 给项目补齐 src/pack.js 与独立测试 tests/pack.test.js，要求 node tests/pack.test.js 输出 PASS --agents 2
+/swarm 调研仓库认证模块与缓存层性能瓶颈，分别输出到 docs/audit-auth.md 和 docs/audit-cache.md --isolation shared
+/swarm 重构订单状态机并补全集成测试 --agents 3 --interactive
 ```
 
-| 参数 | 说明 |
-|---|---|
-| 目标（必填） | 一句话说清做什么、验收标准是什么 |
-| `--agents` | 并行工人数，默认 4，上限 10 |
-| `--isolation` | `auto`（默认：git 仓库自动 worktree，否则共享+分区）/ `worktree` / `shared` |
-| `--interactive` | 开启两个运行中人工停点（拆解确认后、收尾合并前） |
-| `--model` | 整支小队切换模型（完整 `providerId/modelId`） |
+---
 
-**开跑前会提示 token 消耗**：N 个工人 + 每任务一个验证员 + 回归门禁，明显高于单 agent。5 分钟能干完的小活别开小队。
+## `.swarm/` 目录说明
 
-## 已实测范围与已知未实测路径
+- `.swarm/board/`：工人通信信箱。**每次开跑前自动清空**，跑完后保留在工作区供复盘消息流水。
+- `.swarm/<id>/`：worktree 模式下各子任务的临时工作树。验证通过且合并成功后自动移除；未通过验证或受阻任务的现场会原地保留，方便人工排查。
+- 建议把 `.swarm/` 加入目标仓库的 `.gitignore`；工作流收尾的 `git status` 洁净检查会自动忽略 `.swarm/`。
 
-以下结论来自 **4 轮真实端到端运行**（worktree / shared+纯调研 / followUps 回流+interactive / 最终版闭环）+ 5 份固定逻辑回归脚本：
+---
 
-**已实测 ✅**：worktree 隔离→验证→合并→清理全链路；残留分支/目录自动清理（含清理顺序反转 bug 的修复验证）；脏工作区警告与非预期文件过滤；shared 模式与 scope 分区；followUps 上报→领队分流→后续任务建 worktree→三合一并；`--interactive` 两个停点的真实停等与填充；信箱 @路由（含 `[@all]` 在条目任意位置的容错）；集成回归门禁通过路径；metrics 精确统计；计划卡/报告一致性。
+## 实测边界与透明度
 
-**零自然触发 ⚠️**（代码存在、逻辑经审查，但 4 轮里 0 次真实发生——模型太守规矩）：
-- 对抗验证打回的**修复轮**（`rounds > 1`）
-- `blocked` / `escalate` 收尾路径
-- `git merge` 冲突的解决流程
-- 集成回归失败后的「集成修复员」循环
-- 多工人并发上报 followUps 触发 `maxTotal` 上限截断（竞态防护已按 `reserveSlot`/`dispatch` 两步实现并审查，未压测）
+截至 `v0.1.0`，主干流程已通过 **4 轮真实端到端测试**（涵盖 `worktree` 隔离合并、`shared` + 纯调研、`followUps` 动态回流 + `--interactive` 双停点、最终落盘版全链路闭环）与 **5 份片段级逻辑回归**：
 
-遇到其中任何一条真实触发后行为不符预期，欢迎提 issue 附执行报告。
+- **已实测通过**
+  - `worktree` 创建、残留清理（含先拆树删目录再 `prune` 后删分支的顺序修复）、`--no-ff` 合并与自动收尾清理
+  - 脏工作区开工警告与收尾 `git status` 路径过滤（含 Git 对未跟踪目录折叠输出的兼容）
+  - `shared` 共享工作区 + `scope` 范围分区 + 纯 `research` 零 Git 写操作
+  - `followUps` 工人上报 → 领队分流 → 嵌套 worktree 创建 → 多分支联合合并
+  - `--interactive` 两个 `hole` 停点的真实暂停、修改与续跑
+  - 信箱 `[@id]` / `[@all]` 路由、跨轮次重置与「消息板 / 看板 / 进度指标 / 报告」四件套产出
+  - 合并后 `gateCommands` 集成回归通过路径
+- **尚未在真实运行中自然触发的兜底分支（代码已实现并经审查，留待真实使用检验）**
+  - 验证员打回后的**工人修复轮**（4 轮测试均在第 1 轮即通过验证）
+  - 工人主动上报 `blocked` 或 `escalate` 的中断收尾路径
+  - 合并员处理 `git merge` 冲突的分支
+  - `gateCommands` 失败后拉起「集成修复员」的修复再跑闭环
+  - 多工人高并发同时上报 `followUps` 撞上 `maxTotal` 上限截断（已通过 `reserveSlot` 同步占位消除竞态，尚未高并发压测）
 
-## `.swarm/` 目录
+如在真实使用中遇到上述分支表现异常，欢迎附执行报告提 Issue。
 
-- `.swarm/board/`：工人信箱（每次运行开工时**清空重置**），结束保留供复盘。
-- `.swarm/<任务id>/`：worktree 模式下各任务的独立工作树，合并成功后自动移除；失败任务的现场保留。
-- 建议把 `.swarm/` 加进目标项目的 `.gitignore`；脚本结尾的工作区干净检查会自动过滤 `.swarm/` 与各任务声明的产出。
+---
 
-## Examples
+## 示例与相关项目
 
-[`examples/`](examples/) 收录真实运行的完整执行报告：
+### 真实运行报告示例（[`examples/`](examples/)）
 
-- [`report-run3-followups-interactive.md`](examples/report-run3-followups-interactive.md)：followUps 回流 + interactive 停点 + 三分支合并（含验证员用 `git show swarm/tool:src/tool.js` 跨分支实测的记录）
-- [`report-run1-worktree-basic.md`](examples/report-run1-worktree-basic.md)：基础 worktree 模式，验证员字节级核对断言
+- [`report-run1-worktree-basic.md`](examples/report-run1-worktree-basic.md)：基础 `worktree` 模式完整报告与逐条命令核对记录
+- [`report-run3-followups-interactive.md`](examples/report-run3-followups-interactive.md)：`followUps` 动态回流 + `--interactive` 停点 + 三分支合并报告
 
-## Related work
+### Related Work
 
-- [marcopesani/swarm-skill](https://github.com/marcopesani/swarm-skill)：同概念（lead + worktree 工人 + 审计），实现路线不同——外部 `pi` 进程跑 OpenRouter 便宜模型 + SQLite 消息板，面向 Claude Code/Codex/pi 等 75+ agent；本项目用 ZCode 原生 dynamic-workflows 扇出，零外部依赖，多独立对抗验证员与实时看板/消息板。
-- [wjgoarxiv/antigravity-swarm](https://github.com/wjgoarxiv/antigravity-swarm)（已改名 LitGravity）：名字相近但不是 swarm——是给 Antigravity CLI 加"计划→测试→评审→交接"工作纪律的包。本项目取名 `zcode-swarm` 以避免混淆。
+- [marcopesani/swarm-skill](https://github.com/marcopesani/swarm-skill)：同样采用“领队 + worktree 工人 + 审计”思路，但通过外部 `pi` 进程与 SQLite 消息板适配多客户端；`zcode-swarm` 专注在 ZCode 原生 `dynamic-workflows` 运行时内实现零外部依赖的类型化编排、独立对抗验证与实时 UI 卡片。
+- [wjgoarxiv/antigravity-swarm](https://github.com/wjgoarxiv/antigravity-swarm)（已更名 LitGravity）：侧重为 CLI 增加“计划 → 测试 → 评审 → 交接”工作纪律提示，并非并行的多 Agent 蜂群编排；本项目命名为 `zcode-swarm` 以作区分。
 
 ---
 
 ## English
 
-**zcode-swarm** turns one goal into a swarm of agents: a lead decomposes the goal → an independent critic reviews the plan → workers implement in parallel inside git worktrees → an adversarial verifier tests each task against its acceptance criteria (up to 3 rounds, unverified changes are never merged) → worker-discovered follow-up tasks flow back into the queue through lead triage → branches are merged → a full regression gate runs → the lead audits everything. Live kanban board, precise metrics, a worker message board, and a final execution report are published as run artifacts.
+**zcode-swarm** brings Google Antigravity's `/swarm` multi-agent experience to [ZCode](https://github.com/zai-org/ZCode) — implemented from scratch as a typed, deterministic [`dynamic-workflows`](skills/swarm/workflow/swarm.dwf.ts) orchestration pipeline rather than a single free-form prompt.
 
-**Install** (manual): copy `skills/swarm/workflow/swarm.dwf.ts` to `~/.zcode/workflows/swarm.dwf.ts` and `skills/swarm/` to `~/.zcode/skills/swarm`. The skill self-checks and repairs the global workflow copy on every run.
+### How It Works
 
-**Usage**: `/swarm <goal> [--agents N] [--isolation auto|worktree|shared] [--interactive] [--model <providerId/modelId>]`
+1. **Plan & Independent Critique**: A Lead explores the repo and breaks the goal into self-contained tasks (`code` or `research`), scoped to avoid conflicts. An independent Critic reviews the plan before any worker starts.
+2. **Isolated Parallel Execution**: Git repositories default to one `git worktree` (`.swarm/<id>`, branch `swarm/<id>`) per code task; non-git directories or `--isolation shared` fall back to shared workspace partitioning.
+3. **Adversarial Per-Task Verification**: Every completed task goes to a dedicated read-only Verifier that runs real commands and inspects files against acceptance criteria (up to 3 fix rounds). Unverified branches are never merged.
+4. **Dynamic Lifecycle (`followUps`)**: Workers can report missing prerequisites or newly discovered follow-up tasks; the Lead triages and feeds approved tasks back into the same concurrent queue (`MAX_DEPTH = 2`, capped at `2×` initial tasks).
+5. **Lock-Free File Mailbox & Live Artifacts**: Workers communicate across isolated sessions via append-only `.swarm/board/<id>.md` files (`[@task-id]` / `[@all]`), harvested at `ask` boundaries and streamed live to a 7-column Kanban board, progress metrics, message table, and final report.
+6. **Merge, Regression Gate & Final Audit**: Verified branches are `--no-ff` merged, cleaned up, checked against repository `gateCommands` in the main workspace, and audited by the Lead.
 
-**Honestly-tested scope**: verified over 4 real end-to-end runs (worktree isolation/merge/cleanup, shared+research mode, followUp requeue + nested worktree, interactive stops, mailbox @-routing, regression gate, live dashboards) plus 5 fixed-logic regression snippets. **Never fired in real runs** (implemented and reviewed, 0 natural occurrences): verification fix rounds (`rounds > 1`), `blocked`/`escalate` endings, merge-conflict resolution, the regression-repair loop, and concurrent followUps hitting the `maxTotal` cap. If any of these misbehaves in your use, please open an issue with the execution report attached.
+### Install & Usage
 
-**`.swarm/`**: worker mailboxes (`.swarm/board/`, reset at every run) and per-task worktrees (removed after successful merge). Add `.swarm/` to your project's `.gitignore`.
+```bash
+mkdir -p ~/.zcode/skills ~/.zcode/workflows
+cp -r skills/swarm ~/.zcode/skills/swarm
+cp skills/swarm/workflow/swarm.dwf.ts ~/.zcode/workflows/swarm.dwf.ts
+```
 
-Design inspired by Google Antigravity's `/swarm`; all orchestration code and prompts were written from scratch for ZCode. MIT licensed.
+Or load the repository directly as a ZCode plugin (via [`.zcode-plugin/plugin.json`](.zcode-plugin/plugin.json)). On every run, [`SKILL.md`](skills/swarm/SKILL.md) verifies `ListSavedWorkflows` and installs/repairs the global workflow script automatically.
+
+```text
+/swarm <goal> [--agents N] [--isolation auto|worktree|shared] [--interactive] [--model <providerId/modelId>]
+```
+
+### Tested Scope & Limitations
+
+- **Verified across 4 real end-to-end runs + 5 unit snippets**: `worktree` isolation/merge/cleanup (including cleanup ordering & stale branch recovery), `shared` + `research` mode, `followUps` requeue + nested worktrees, `--interactive` pauses (`hole`), mailbox `@`-routing & run reset, regression gate pass path, and live dashboard artifacts.
+- **Implemented & reviewed, 0 natural triggers in the 4 runs**: verifier rejection repair loops (`rounds > 1`), `blocked`/`escalate` terminations, `git merge` conflict resolution, post-regression repair loop, and concurrent `followUps` hitting `maxTotal`. If any of these paths behave unexpectedly in real usage, please open an issue with the execution report.
 
 ---
 
-## 致谢 Acknowledgements
+## 致谢 · Acknowledgements
 
-设计灵感来自 Google Antigravity 的 `/swarm` 命令；编排逻辑、提示词与全部代码为本项目为 ZCode 从零重实现，未复制原作任何文本或代码。
+设计灵感源自 Google Antigravity 的 `/swarm` 命令；编排脚本、结构化 Schema、提示词与插件包装均针对 ZCode 从零独立实现，未复用原作代码或文本。
 
 ## License
 
