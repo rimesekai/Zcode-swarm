@@ -2,7 +2,7 @@
 
 <img src="assets/icon-512.png" width="128" alt="zcode-swarm icon" />
 
-# zcode-swarm
+# Zcode-swarm
 
 **一条目标，拉起一支有分工、有对抗验收、有动态回流的多智能体小队。**
 
