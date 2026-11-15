@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "zcode-swarm",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "description": "Multi-agent swarm orchestration for ZCode: lead decomposes, workers execute in isolated git worktrees, adversarial verification, dynamic follow-up queue, mailboxes, and regression gate.",
       "source": ".",
       "icon": "https://raw.githubusercontent.com/rimesekai/Zcode-swarm/main/assets/icon-512.png",
